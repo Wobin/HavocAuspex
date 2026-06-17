@@ -3,16 +3,6 @@
     Author: Wobin
     Date: 2026-06-14
     Version: 1.0.0
-
-    Ask your party which havoc orders they have. Every member runs Havoc Auspex (or the
-    thin companion Havoc Auspex Transmitter); each client queries its OWN current havoc order
-    locally (account-scoped, the only order it can read) and replies to the requester
-    over Dan Reeves' `rtc` peer messaging. This (full) client requests, aggregates and
-    renders human-readable output; it also answers other members' requests. Output is
-    shown locally to the requester only.
-
-    Transport: prefers the standalone `rtc` mod if installed, else an embedded copy.
-    Display names resolve from static templates (no Havoc UI view needed).
 --]]
 
 local mod = get_mod("Havoc Auspex")
@@ -254,6 +244,14 @@ local function start_request(simulate)
         status("[Havoc Auspex] Simulating party replies…")
     else
         active.expected = count_expected()
+        -- The headless rtc-test-peer is not a counted party member, so expected
+        -- (= 1, just you) is satisfied by its reply alone and the request finalizes
+        -- before the async self-order promise resolves, dropping your own row.
+        -- In test mode, wait the full window instead (like the simulate path) so
+        -- both your order and the test peer's reply are collected.
+        if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
+            active.expected = nil
+        end
         if rtc_api then
             rtc_api.send(PROTO, Net.EVENTS.REQUEST, "all", { req_id = id, pv = Net.PV })
         end
@@ -309,6 +307,12 @@ end)
 
 mod:command("havocauspex_test", "Local smoke test: simulate party havoc replies.", function()
     start_request(true)
+end)
+
+mod:command("havocauspex_testpeer", "Toggle accepting the headless rtc-test-peer (testing only).", function()
+    local on = not rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN")
+    rawset(_G, "RTC_TEST_ACCEPT_UNKNOWN", on or nil)
+    mod:echo("[Havoc Auspex] RTC test peer acceptance: " .. (on and "ON" or "off"))
 end)
 
 function mod.scan_party()

@@ -56,6 +56,19 @@ return function(host_mod)
             end
         end
 
+        -- Test hook: when the global RTC_TEST_ACCEPT_UNKNOWN is set (via the
+        -- /havocauspex_testpeer command), accept an unverified peer by returning a
+        -- stub player. This lets rtc-test-peer drive the real RTC path solo. The
+        -- wire format is untouched, so party interop is unaffected; the flag is off
+        -- by default and only useful with the headless test peer connected.
+        if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
+            return {
+                account_id = function() return account_id end,
+                name = function() return "RTC Test Peer" end,
+                is_rtc_test_peer = true,
+            }
+        end
+
         return nil
     end
 
@@ -192,7 +205,7 @@ return function(host_mod)
         end)
 
         mod:hook("MultiplayerSession", "other_client_left", function(func, self, game_peer_id)
-            for _, player in pairs(Managers.player:players_at_peer(game_peer_id)) do
+            for _, player in pairs(Managers.player:players_at_peer(game_peer_id) or {}) do
                 local account_id = player:account_id()
                 local peer_id = account_id_to_peer_id[account_id]
                 local peer_data = data_for_peer[peer_id]
