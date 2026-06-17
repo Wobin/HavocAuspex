@@ -1,16 +1,3 @@
---[[
-    Simulation fixtures for Havoc Auspex's local smoke test (/havocauspex_test).
-    Each entry mirrors the WIRE payload shape: { name, order } where order is the raw
-    current-order table (or nil for "no active order"). Real `flags` keys + real mission
-    ids are used so the full client's parse + template resolution runs against actual game
-    data, not just the renderer.
-
-    These three fill out the rest of a 4-person party (you + 3) with assorted havoc
-    combos that exercise the coloured circumstance icons + tooltips: between them they
-    cover every colour in the scheme, one un-coloured circ (renders white), and a
-    fading-light circ (to test the hide toggle). Charges + varied rank/location too.
---]]
-
 return {
     {
         name  = "Sgt. Morrow",
@@ -42,7 +29,7 @@ return {
     {
         name  = "Rannick",
         order = {
-            rank = 24, map = "hm_strain", challenge = 4, resistance = 5, charges = 5,
+            rank = 24, map = "hm_strain", challenge = 4, resistance = 5, charges = 3,
             flags = {
                 ["havoc-circ-mutator_encroaching_garden"]              = true,
                 ["havoc-circ-mutator_havoc_enemies_parasite_headshot"] = true,

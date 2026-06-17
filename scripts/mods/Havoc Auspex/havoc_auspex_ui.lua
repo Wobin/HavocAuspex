@@ -1,16 +1,3 @@
---[[
-    In-game UI for Havoc Auspex.
-
-    Adds a permanent overlay panel on the Havoc page (HavocPlayView) with a refresh
-    button, listing each party member's order in rows: name, rank, charges, location,
-    and coloured circumstance icons (hover an icon for its name). The panel polls the
-    mod's aggregation snapshot (mod.current_results) and rebuilds rows only when the
-    aggregation changes (mod.results_version); it knows nothing of the rtc internals.
-
-    View-injection pattern mirrors the HavocPost mod (hook_require the view's
-    definitions + the view class, then create/register widgets in on_enter).
---]]
-
 local mod = get_mod("Havoc Auspex")
 
 local UIWidget = require("scripts/managers/ui/ui_widget")
