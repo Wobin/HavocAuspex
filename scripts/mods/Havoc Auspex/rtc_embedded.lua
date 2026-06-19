@@ -1,17 +1,3 @@
---[[
-    Embedded copy of Dan Reeves' `rtc` peer-messaging library.
-    Original: https://github.com/danreeves/darktide-mods/tree/main/rtc  (MIT, by Dan Reeves)
-
-    Rebound to a host DMF mod so Havoc Auspex works even when the standalone `rtc`
-    mod is not installed. The wire format (channel name, message envelope and the
-    `rtc_share_meta` handshake) is kept byte-identical to upstream so an embedded
-    client interoperates with party members running the real `rtc` mod.
-
-    IMPORTANT: only ONE rtc transport may be active per client. Havoc Auspex prefers
-    the standalone `rtc` mod (get_mod("rtc")) and only `activate()`s this copy when
-    that mod is absent, so the MultiplayerSession hooks / RTC.connect run once.
---]]
-
 return function(host_mod)
     local mod = host_mod
     local api = {}
@@ -20,6 +6,47 @@ return function(host_mod)
     local internal_data        = mod:persistent_table("rtc_embedded_internal_data")
     local data_for_peer        = mod:persistent_table("rtc_embedded_data_for_peer")
     local account_id_to_peer_id = mod:persistent_table("rtc_embedded_account_id_to_peer_id")
+
+    local function current_channel()
+        return internal_data.channel
+    end
+
+    local URL_SAFE = {}
+    do
+        local function mark_range(from, to)
+            for b = string.byte(from), string.byte(to) do URL_SAFE[b] = true end
+        end
+        mark_range("A", "Z")
+        mark_range("a", "z")
+        mark_range("0", "9")
+        for _, c in ipairs({ "-", "_", ".", "~" }) do URL_SAFE[string.byte(c)] = true end
+    end
+
+    local function url_encode(s)
+        return (tostring(s):gsub(".", function(c)
+            local b = string.byte(c)
+            if URL_SAFE[b] then return c end
+            return string.format("%%%02X", b)
+        end))
+    end
+
+    local MAX_TAG_NAME_BYTES = 24
+    local function local_name_tag()
+        local name
+        pcall(function()
+            local lp = Managers.player and Managers.player:local_player(1)
+            name = lp and lp:name()
+        end)
+        name = name or "?"
+        if #name > MAX_TAG_NAME_BYTES then
+            name = name:sub(1, MAX_TAG_NAME_BYTES)
+        end
+        local tag = url_encode(name)
+        if tag == "" then
+            tag = url_encode("?")
+        end
+        return tag
+    end
 
     function api.register(registering_mod, event_name, callback)
         local mod_name = registering_mod:get_name()
@@ -33,13 +60,12 @@ return function(host_mod)
             mod:echo(string.format("[%s] RTC plugin not installed - peer networking unavailable.", mod_name))
             return
         end
-        local host_peer_id = internal_data.host_peer_id
-        if not host_peer_id then
+        local channel = current_channel()
+        if not channel then
             mod:echo(string.format("[%s] Not connected to a channel, cannot send message.", mod_name))
             return
         end
 
-        local channel = "rtc_" .. host_peer_id
         local payload = {
             mod_name   = mod_name,
             event_name = event_name,
@@ -49,6 +75,21 @@ return function(host_mod)
         RTC.send(channel, recipient, cjson.encode(payload))
     end
 
+    local function party_member_by_account_id(account_id)
+        local ok, member = pcall(function()
+            local pim = Managers.party_immaterium
+            local members = pim and pim:all_members()
+            if type(members) ~= "table" then return nil end
+            for _, m in ipairs(members) do
+                if type(m.account_id) == "function" and m:account_id() == account_id then
+                    return m
+                end
+            end
+            return nil
+        end)
+        return ok and member or nil
+    end
+
     function api.get_player_by_account_id(account_id)
         for _, player in pairs(Managers.player:players()) do
             if player:account_id() == account_id then
@@ -56,11 +97,11 @@ return function(host_mod)
             end
         end
 
-        -- Test hook: when the global RTC_TEST_ACCEPT_UNKNOWN is set (via the
-        -- /havocauspex_testpeer command), accept an unverified peer by returning a
-        -- stub player. This lets rtc-test-peer drive the real RTC path solo. The
-        -- wire format is untouched, so party interop is unaffected; the flag is off
-        -- by default and only useful with the headless test peer connected.
+        local member = party_member_by_account_id(account_id)
+        if member then
+            return member
+        end
+
         if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
             return {
                 account_id = function() return account_id end,
@@ -121,13 +162,12 @@ return function(host_mod)
             return
         end
 
-        local host_peer_id = internal_data.host_peer_id
-        if not host_peer_id then
+        local channel = current_channel()
+        if not channel then
             mod:echo("[rtc_embedded] Not connected to a channel, cannot send message.")
             return
         end
 
-        local channel = "rtc_" .. host_peer_id
         local data = {
             account_id = account_id,
             mods       = player_mods,
@@ -188,21 +228,38 @@ return function(host_mod)
         end
     end
 
-    function api.activate()
-        mod:hook_safe("MultiplayerSession", "joined_host", function(_self, _channel_id, host_peer_id)
-            if not RTC then return end
-            internal_data.host_peer_id = host_peer_id
-            local channel = "rtc_" .. host_peer_id
+    local function current_party_id()
+        local ok, party_id = pcall(function()
+            return Managers.party_immaterium and Managers.party_immaterium:party_id()
+        end)
+        return (ok and party_id) or ""
+    end
+
+    local function sync_channel()
+        if not RTC then return end
+        local new_id = current_party_id()
+        local old_id = internal_data.party_id
+        if new_id == (old_id or "") then return end
+
+        if internal_data.channel then
+            RTC.disconnect(internal_data.channel)
+            internal_data.channel = nil
+            internal_data.party_id = nil
+        end
+        if new_id ~= "" then
+            local channel = "rtc_" .. new_id .. "?n=" .. local_name_tag()
+            internal_data.party_id = new_id
+            internal_data.channel = channel
             RTC.connect(channel, on_peer_connect, on_message, on_peer_disconnect)
+        end
+    end
+
+    function api.activate()
+        mod:hook_safe("PartyImmateriumManager", "_handle_party_update_event", function(_self)
+            sync_channel()
         end)
 
-        mod:hook_safe("MultiplayerSession", "disconnected_from_host", function(self)
-            local host_peer_id = self._joined_host_peer_id
-            internal_data.host_peer_id = nil
-            if RTC and host_peer_id then
-                RTC.disconnect("rtc_" .. host_peer_id)
-            end
-        end)
+        sync_channel()
 
         mod:hook("MultiplayerSession", "other_client_left", function(func, self, game_peer_id)
             for _, player in pairs(Managers.player:players_at_peer(game_peer_id) or {}) do

@@ -9,7 +9,9 @@ local BUTTON_PACKAGE = "packages/ui/views/options_view/options_view"
 
 local PANEL_W, PANEL_H = 653, 300
 local ROW_H, ROW_TOP   = 52, 54
-local LABEL_X, LABEL_W = 20, 405
+local COL_NAME_X, COL_NAME_W = 20, 135
+local COL_RANK_X, COL_RANK_W = 160, 80
+local COL_LOC_X,  COL_LOC_W  = 245, 180
 local ICON, ICON_GAP   = 30, 34
 local ICON_X           = 433
 local MAX_ROWS, MAX_ICONS = 4, 6
@@ -28,19 +30,24 @@ local function ensure_package()
 end
 
 local function row_passes()
-    local p = {
-        {
-            pass_type = "text", style_id = "label", value_id = "label", value = "",
+    local function text_col(id, x, w)
+        return {
+            pass_type = "text", style_id = id, value_id = id, value = "",
             style = {
                 font_type = "proxima_nova_bold", font_size = 18, drop_shadow = true,
-                text_color = { 255, 235, 235, 235 }, offset = { LABEL_X, 0, 2 },
-                size = { LABEL_W, ROW_H }, text_vertical_alignment = "center",
+                text_color = { 255, 235, 235, 235 }, offset = { x, 0, 2 },
+                size = { w, ROW_H }, text_vertical_alignment = "center",
                 text_horizontal_alignment = "left",
             },
-        },
+        }
+    end
+    local p = {
+        text_col("col_name", COL_NAME_X, COL_NAME_W),
+        text_col("col_rank", COL_RANK_X, COL_RANK_W),
+        text_col("col_loc",  COL_LOC_X,  COL_LOC_W),
         {
             pass_type = "hotspot", content_id = "loc_hs", style_id = "loc_hs",
-            style = { size = { 0, ROW_H }, offset = { LABEL_X, 0, 5 } },
+            style = { size = { 0, ROW_H }, offset = { COL_LOC_X, 0, 5 } },
         },
     }
     for i = 1, MAX_ICONS do
@@ -171,32 +178,6 @@ mod:hook_require("scripts/ui/views/havoc_play_view/havoc_play_view", function(in
     end
 end)
 
-local function measure(self, text, style)
-    local ok, w = pcall(Text.text_width, self._ui_renderer, text, style, { 4000, ROW_H })
-    if ok and type(w) == "number" and w > 0 then return w end
-    return nil
-end
-
-local function place_loc_hotspot(self, st, label, location, has_sub)
-    local ls = st.loc_hs
-    if not ls then return end
-    if not (has_sub and location and location ~= "") then
-        ls.size[1] = 0
-        return
-    end
-    local full_w = measure(self, label, st.label)
-    local loc_w = measure(self, location, st.label)
-    if full_w and loc_w then
-        local x = math.max(LABEL_X, LABEL_X + (full_w - loc_w) - 2)
-        local right = LABEL_X + LABEL_W
-        ls.offset[1] = x
-        ls.size[1] = math.max(0, math.min(loc_w + 4, right - x))
-    else
-        ls.offset[1] = LABEL_X
-        ls.size[1] = LABEL_W
-    end
-end
-
 local function rebuild_rows(self, rows)
     self._ha_desc = self._ha_desc or {}
     for i = 1, MAX_ROWS do
@@ -209,11 +190,14 @@ local function rebuild_rows(self, rows)
                 local d = row.order and mod.describe_order(row.order) or nil
                 self._ha_desc[i] = d
                 if d then
-                    c.label = ("%s    R%s%s    %s"):format(
-                        row.name, tostring(d.rank or "?"),
-                        d.charges and (" (" .. tostring(d.charges) .. "c)") or "",
-                        d.location or "")
-                    place_loc_hotspot(self, st, c.label, d.location, d.location_sub ~= nil)
+                    c.col_name = row.name
+                    c.col_rank = ("R%s%s"):format(
+                        tostring(d.rank or "?"),
+                        d.charges and (" (" .. tostring(d.charges) .. "c)") or "")
+                    c.col_loc = d.location or ""
+                    if st.loc_hs then
+                        st.loc_hs.size[1] = (d.location_sub ~= nil and d.location and d.location ~= "") and COL_LOC_W or 0
+                    end
                     for k = 1, MAX_ICONS do
                         local circ = d.circs[k]
                         local show = (circ ~= nil) and (type(circ.icon) == "string")
@@ -223,7 +207,9 @@ local function rebuild_rows(self, rows)
                         if istyle then istyle.color = (circ and circ.color) or WHITE end
                     end
                 else
-                    c.label = row.name .. "    None"
+                    c.col_name = row.name
+                    c.col_rank = "None"
+                    c.col_loc = ""
                     if st.loc_hs then st.loc_hs.size[1] = 0 end
                     for k = 1, MAX_ICONS do c["show_" .. k] = false end
                 end

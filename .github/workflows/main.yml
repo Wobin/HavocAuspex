@@ -9,7 +9,7 @@ jobs:
   fetch-upload:
     uses: wobin/DarktideModAutoUploader/.github/workflows/pack_mod.yml@v1
     with:
-      nexusmods_mod_id: 0 # TODO: set to the Nexus mod id after the first upload
+      nexusmods_mod_id: 926
       mod_version: ${{ github.event.release.name }}
       mod_description: ${{ github.event.release.body }}
       checkout_ref: ${{ github.event.release.tag_name }}

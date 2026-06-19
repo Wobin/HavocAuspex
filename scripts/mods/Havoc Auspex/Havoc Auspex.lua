@@ -244,11 +244,6 @@ local function start_request(simulate)
         status("[Havoc Auspex] Simulating party replies…")
     else
         active.expected = count_expected()
-        -- The headless rtc-test-peer is not a counted party member, so expected
-        -- (= 1, just you) is satisfied by its reply alone and the request finalizes
-        -- before the async self-order promise resolves, dropping your own row.
-        -- In test mode, wait the full window instead (like the simulate path) so
-        -- both your order and the test peer's reply are collected.
         if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
             active.expected = nil
         end
@@ -288,15 +283,10 @@ mod.update = function(dt)
 end
 
 mod.on_all_mods_loaded = function()
-    rtc_api = get_mod("rtc")
-    if rtc_api then
-        dbg("using standalone rtc mod")
-    else
-        local make = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_embedded")
-        rtc_api = make(mod)
-        rtc_api.activate()
-        dbg("using embedded rtc transport")
-    end
+    local make = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_embedded")
+    rtc_api = make(mod)
+    rtc_api.activate()
+    dbg("using embedded rtc transport (party-keyed)")
     rtc_api.register(PROTO, Net.EVENTS.REQUEST, on_request)
     rtc_api.register(PROTO, Net.EVENTS.REPLY, on_reply)
 end

@@ -1,11 +1,3 @@
---[[
-    Shared protocol + payload helpers for Havoc Auspex / Havoc Auspex Transmitter.
-
-    Both mods speak rtc under the SAME protocol name (Net.PROTOCOL) so they route to
-    each other (rtc dispatches by the sender's mod name). Keep this file identical in
-    both mods so the wire format stays in lockstep.
---]]
-
 local Net = {
     PROTOCOL = "Havoc Auspex",
     PV = 1,
