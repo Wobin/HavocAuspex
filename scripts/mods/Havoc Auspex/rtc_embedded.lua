@@ -2,6 +2,11 @@ return function(host_mod)
     local mod = host_mod
     local api = {}
 
+    -- Native RTC transport via LuaJIT FFI (replaces the old PluginApi global `RTC`).
+    -- Returns nil when the dll can't load, so the `if not RTC` guards below still
+    -- correctly detect "transport unavailable".
+    local RTC = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_ffi")(mod)
+
     local mod_event_handlers   = mod:persistent_table("rtc_embedded_mod_event_handlers")
     local internal_data        = mod:persistent_table("rtc_embedded_internal_data")
     local data_for_peer        = mod:persistent_table("rtc_embedded_data_for_peer")
@@ -235,13 +240,18 @@ return function(host_mod)
         return (ok and party_id) or ""
     end
 
-    local function sync_channel()
-        if not RTC then return end
-        local new_id = current_party_id()
-        local old_id = internal_data.party_id
-        if new_id == (old_id or "") then return end
+    -- Diagnostic trace of the party->channel reconnect boundary, gated by
+    -- debug_mode (mod:info -> console log only). Instrumentation, not behavior.
+    local function dbg(msg)
+        if mod:get("debug_mode") then mod:info("[rtc_embedded] " .. msg) end
+    end
 
+    -- Tear down the current channel (if any) and connect to the room for
+    -- new_id (unless empty). Shared by the party-change path and the
+    -- mission-DC recovery path; carries no short-circuit of its own.
+    local function connect_channel(new_id)
         if internal_data.channel then
+            dbg("rebuild: disconnect " .. internal_data.channel)
             RTC.disconnect(internal_data.channel)
             internal_data.channel = nil
             internal_data.party_id = nil
@@ -250,13 +260,45 @@ return function(host_mod)
             local channel = "rtc_" .. new_id .. "?n=" .. local_name_tag()
             internal_data.party_id = new_id
             internal_data.channel = channel
+            dbg("rebuild: connect " .. channel)
             RTC.connect(channel, on_peer_connect, on_message, on_peer_disconnect)
         end
     end
 
+    local function sync_channel()
+        if not RTC then return end
+        local new_id = current_party_id()
+        local old_id = internal_data.party_id
+        if new_id == (old_id or "") then
+            dbg(("sync: no change (party_id=%s, channel=%s)"):format(tostring(new_id), tostring(internal_data.channel)))
+            return
+        end
+
+        dbg(("sync: party_id %s -> %s"):format(tostring(old_id), tostring(new_id)))
+        connect_channel(new_id)
+    end
+
+    -- Recovery for the mission-DC case: the immaterium party_id is unchanged
+    -- (so sync_channel would no-op), but the matchbox peer mesh died across
+    -- the mission. Rebuild a fresh socket on the SAME room to re-establish
+    -- every current party member. See the DC analysis in memory.
+    local function force_resync()
+        if not RTC then return end
+        connect_channel(current_party_id())
+    end
+
     function api.activate()
         mod:hook_safe("PartyImmateriumManager", "_handle_party_update_event", function(_self)
+            dbg("party_update_event")
             sync_channel()
+        end)
+
+        -- Mission-end / hub-return: the game session drops here while the
+        -- immaterium party (and party_id) persists, so the peer mesh is dead
+        -- but sync_channel sees no change. Force a fresh socket on the same room.
+        mod:hook_safe("MultiplayerSession", "disconnected_from_host", function()
+            dbg("disconnected_from_host -> force_resync")
+            force_resync()
         end)
 
         sync_channel()
@@ -281,6 +323,10 @@ return function(host_mod)
 
             return func(self, game_peer_id)
         end)
+    end
+
+    function api.poll()
+        if RTC then RTC.poll() end
     end
 
     return api

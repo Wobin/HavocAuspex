@@ -1,8 +1,8 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-06-14
-    Version: 1.0.0
+    Date: 2026-06-29
+    Version: 1.6.0
 --]]
 
 local mod = get_mod("Havoc Auspex")
@@ -273,6 +273,7 @@ local function on_reply(player, data)
 end
 
 mod.update = function(dt)
+    if rtc_api and rtc_api.poll then rtc_api.poll() end
     if not active or active.finalized then return end
     active.elapsed = active.elapsed + dt
     if active.expected and #active.names >= active.expected then
@@ -323,4 +324,4 @@ function mod.current_results()
     return results_cache
 end
 
-mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_auspex_ui")
+mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_auspex_ui") 
