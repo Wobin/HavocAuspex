@@ -263,9 +263,11 @@ local function render_rows(self)
 
     if self._ha_panel then
         local overflow = #rows - MAX_ROWS
+        local missing = res.finalized and type(res.party_size) == "number" and #rows < res.party_size
         self._ha_panel.content.status = (not hover_name)
             and (res.scanning and "Scanning party…"
                  or (overflow > 0 and ("+ " .. overflow .. " more not shown"))
+                 or (missing and "Missing a teammate? If they run the mod, try /havocauspex_sync")
                  or ((#rows == 0) and "No responses.")
                  or "")
             or ""

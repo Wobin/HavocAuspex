@@ -11,6 +11,7 @@ return function(host_mod)
             int RTC_Disconnect(const char* room);
             int RTC_PollEvent(int* type_out, char* room, int room_cap, char* peer, int peer_cap, char* msg, int msg_cap, int* msg_len_out);
             void RTC_Shutdown(void);
+            int RTC_Version(char* buf, int cap);
         ]])
     end
 
@@ -22,10 +23,18 @@ return function(host_mod)
 
     local RTC = {}
 
-    -- channel -> { on_connect, on_message, on_disconnect }
+    do
+        local vok, ver = pcall(function()
+            local cap = 64
+            local buf = ffi.new("char[?]", cap)
+            lib.RTC_Version(buf, cap)
+            return ffi.string(buf)
+        end)
+        RTC.dll_version = (vok and ver ~= "" and ver) or nil
+    end
+
     local handlers = {}
 
-    -- Reusable FFI scratch buffers (allocated once; never resized).
     local ROOM_CAP, PEER_CAP, MSG_CAP, ERR_CAP = 256, 64, 65536, 1024
     local type_out    = ffi.new("int[1]")
     local msg_len_out = ffi.new("int[1]")
@@ -39,8 +48,6 @@ return function(host_mod)
     local EVENT_PEER_DISCONNECTED = 3
     local MAX_EVENTS_PER_POLL     = 256
 
-    -- Diagnostic trace into the console log, gated by the mod's debug_mode
-    -- setting so normal play stays silent. mod:info keeps it out of in-game chat.
     local function dbg(msg)
         if mod:get("debug_mode") then mod:info("[rtc_ffi] " .. msg) end
     end

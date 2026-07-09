@@ -1,11 +1,12 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-06-29
-    Version: 1.6.0
+    Date: 2026-07-10
+    Version: 1.8.2
 --]]
 
 local mod = get_mod("Havoc Auspex")
+mod.version = "1.8.2"
 
 local Net = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_net")
 
@@ -207,6 +208,7 @@ end
 
 local function count_expected()
     local n = 1
+    local total = 1
     pcall(function()
         local pim = Managers.party_immaterium
         local members = pim and pim:all_members()
@@ -214,15 +216,18 @@ local function count_expected()
         local self_acc = local_account_id()
         for _, m in ipairs(members) do
             local acc = m.account_id and m:account_id()
-            if acc and acc ~= self_acc and rtc_api and rtc_api.get_player_by_account_id then
-                local p = rtc_api.get_player_by_account_id(acc)
-                if p and rtc_api.player_has_mod(p, Net.PROTOCOL) then
-                    n = n + 1
+            if acc and acc ~= self_acc then
+                total = total + 1
+                if rtc_api and rtc_api.get_player_by_account_id then
+                    local p = rtc_api.get_player_by_account_id(acc)
+                    if p and rtc_api.player_has_mod(p, Net.PROTOCOL) then
+                        n = n + 1
+                    end
                 end
             end
         end
     end)
-    return n
+    return n, total
 end
 
 local function start_request(simulate)
@@ -243,7 +248,7 @@ local function start_request(simulate)
         end
         status("[Havoc Auspex] Simulating party replies…")
     else
-        active.expected = count_expected()
+        active.expected, active.party_size = count_expected()
         if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
             active.expected = nil
         end
@@ -274,6 +279,7 @@ end
 
 mod.update = function(dt)
     if rtc_api and rtc_api.poll then rtc_api.poll() end
+    if rtc_api and rtc_api.tick then rtc_api.tick(dt) end
     if not active or active.finalized then return end
     active.elapsed = active.elapsed + dt
     if active.expected and #active.names >= active.expected then
@@ -290,6 +296,9 @@ mod.on_all_mods_loaded = function()
     dbg("using embedded rtc transport (party-keyed)")
     rtc_api.register(PROTO, Net.EVENTS.REQUEST, on_request)
     rtc_api.register(PROTO, Net.EVENTS.REPLY, on_reply)
+    local dll = rtc_api.rtc_available() and (rtc_api.dll_version() or "legacy") or "MISSING"
+    mod:info(("Havoc Auspex v%s loaded (protocol v%d, RTC dll: %s)"):format(
+        tostring(mod.version), Net.PV, dll))
 end
 
 mod:command("havocauspex", "Ask your party which havoc orders they have.", function()
@@ -306,6 +315,15 @@ mod:command("havocauspex_testpeer", "Toggle accepting the headless rtc-test-peer
     mod:echo("[Havoc Auspex] RTC test peer acceptance: " .. (on and "ON" or "off"))
 end)
 
+mod:command("havocauspex_sync", "Rebuild your RTC connections to the party (run if some members' orders are missing).", function()
+    if not (rtc_api and rtc_api.resync) then
+        mod:echo("[Havoc Auspex] Transport not ready.")
+        return
+    end
+    rtc_api.resync()
+    mod:echo("[Havoc Auspex] Rebuilding party connections. Reopen the Havoc terminal in a few seconds.")
+end)
+
 function mod.scan_party()
     start_request(mod:get("simulate_replies"))
 end
@@ -319,7 +337,7 @@ function mod.current_results()
     for _, name in ipairs(active.names) do
         rows[#rows + 1] = { name = name, order = active.order_by_name[name] }
     end
-    results_cache = { scanning = not active.finalized, finalized = active.finalized, rows = rows }
+    results_cache = { scanning = not active.finalized, finalized = active.finalized, rows = rows, party_size = active.party_size }
     results_cache_ver = results_version
     return results_cache
 end

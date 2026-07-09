@@ -2,10 +2,13 @@ return function(host_mod)
     local mod = host_mod
     local api = {}
 
-    -- Native RTC transport via LuaJIT FFI (replaces the old PluginApi global `RTC`).
-    -- Returns nil when the dll can't load, so the `if not RTC` guards below still
-    -- correctly detect "transport unavailable".
     local RTC = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_ffi")(mod)
+
+    local new_resync_gate = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/resync_gate")
+    local resync_gate = new_resync_gate()
+
+    local SETTLE_DELAY        = 3.0
+    local MIN_RESYNC_INTERVAL = 15.0
 
     local mod_event_handlers   = mod:persistent_table("rtc_embedded_mod_event_handlers")
     local internal_data        = mod:persistent_table("rtc_embedded_internal_data")
@@ -51,6 +54,14 @@ return function(host_mod)
             tag = url_encode("?")
         end
         return tag
+    end
+
+    function api.rtc_available()
+        return RTC ~= nil
+    end
+
+    function api.dll_version()
+        return RTC and RTC.dll_version or nil
     end
 
     function api.register(registering_mod, event_name, callback)
@@ -138,11 +149,22 @@ return function(host_mod)
         return false
     end
 
+    local function format_peer_client(data)
+        if data.client then
+            return ("%s v%s (dll %s)"):format(
+                tostring(data.client), tostring(data.client_version or "?"), tostring(data.dll_version or "legacy"))
+        end
+        return "[pre-telemetry build, version unknown]"
+    end
+
     local function on_share_meta(peer_id, data)
         data_for_peer[peer_id] = data
         account_id_to_peer_id[data.account_id] = peer_id
 
         local player = api.get_player_by_account_id(data.account_id)
+        local peer_name = (player and type(player.name) == "function" and player:name()) or tostring(data.account_id)
+        mod:info(("[rtc_embedded] peer meta: %s | %s"):format(peer_name, format_peer_client(data)))
+
         if not player or not #data.mods then
             return
         end
@@ -174,8 +196,11 @@ return function(host_mod)
         end
 
         local data = {
-            account_id = account_id,
-            mods       = player_mods,
+            account_id     = account_id,
+            mods           = player_mods,
+            client         = mod:get_name(),
+            client_version = tostring(mod.version or "?"),
+            dll_version    = RTC and RTC.dll_version or nil,
         }
         local payload = {
             mod_name   = "rtc",
@@ -240,15 +265,18 @@ return function(host_mod)
         return (ok and party_id) or ""
     end
 
-    -- Diagnostic trace of the party->channel reconnect boundary, gated by
-    -- debug_mode (mod:info -> console log only). Instrumentation, not behavior.
+    local function in_hub()
+        local ok, name = pcall(function()
+            local gm = Managers.state and Managers.state.game_mode
+            return gm and gm:game_mode_name()
+        end)
+        return ok and (name == "hub" or name == "prologue_hub") or false
+    end
+
     local function dbg(msg)
         if mod:get("debug_mode") then mod:info("[rtc_embedded] " .. msg) end
     end
 
-    -- Tear down the current channel (if any) and connect to the room for
-    -- new_id (unless empty). Shared by the party-change path and the
-    -- mission-DC recovery path; carries no short-circuit of its own.
     local function connect_channel(new_id)
         if internal_data.channel then
             dbg("rebuild: disconnect " .. internal_data.channel)
@@ -278,13 +306,13 @@ return function(host_mod)
         connect_channel(new_id)
     end
 
-    -- Recovery for the mission-DC case: the immaterium party_id is unchanged
-    -- (so sync_channel would no-op), but the matchbox peer mesh died across
-    -- the mission. Rebuild a fresh socket on the SAME room to re-establish
-    -- every current party member. See the DC analysis in memory.
     local function force_resync()
         if not RTC then return end
         connect_channel(current_party_id())
+    end
+
+    function api.resync()
+        force_resync()
     end
 
     function api.activate()
@@ -293,12 +321,9 @@ return function(host_mod)
             sync_channel()
         end)
 
-        -- Mission-end / hub-return: the game session drops here while the
-        -- immaterium party (and party_id) persists, so the peer mesh is dead
-        -- but sync_channel sees no change. Force a fresh socket on the same room.
         mod:hook_safe("MultiplayerSession", "disconnected_from_host", function()
-            dbg("disconnected_from_host -> force_resync")
-            force_resync()
+            dbg("disconnected_from_host -> resync requested (gated)")
+            resync_gate.request()
         end)
 
         sync_channel()
@@ -323,6 +348,14 @@ return function(host_mod)
 
             return func(self, game_peer_id)
         end)
+    end
+
+    function api.tick(dt)
+        if not RTC then return end
+        if resync_gate.tick(dt, in_hub(), SETTLE_DELAY, MIN_RESYNC_INTERVAL) then
+            dbg("gate -> force_resync (in hub, settled, rate-limit ok)")
+            force_resync()
+        end
     end
 
     function api.poll()
