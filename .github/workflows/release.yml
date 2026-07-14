@@ -31,8 +31,9 @@ jobs:
           fi
           unzip -l "Havoc-Auspex-${VERSION}.zip" | grep -q 'Havoc Auspex/Havoc Auspex.mod' \
             || { echo "Missing Havoc Auspex.mod" && exit 1; }
-          unzip -l "Havoc-Auspex-${VERSION}.zip" | grep -q 'Havoc Auspex/bin/darktide_rtc_ffi.dll' \
-            || { echo "Missing native DLL (bin/darktide_rtc_ffi.dll)" && exit 1; }
+          if unzip -l "Havoc-Auspex-${VERSION}.zip" | grep -q '\.dll'; then
+            echo "Unexpected native binary in zip" && exit 1
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

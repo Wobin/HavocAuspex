@@ -1,12 +1,12 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-07-10
-    Version: 1.8.2
+    Date: 2026-07-12
+    Version: 1.9.0
 --]]
 
 local mod = get_mod("Havoc Auspex")
-mod.version = "1.8.2"
+mod.version = "1.9.0"
 
 local Net = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_net")
 
@@ -159,187 +159,169 @@ function mod.describe_order(order)
     }
 end
 
-local rtc_api
-local PROTO = mod
-local req_counter = 0
-local active = nil
+local Presence = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/presence_order")(mod, Net)
 
 local results_version = 0
 local function bump_version() results_version = results_version + 1 end
 function mod.results_version() return results_version end
 
 local function status(msg) if mod:get("debug_mode") then mod:echo(msg) end end
-local function dbg(msg) if mod:get("debug_mode") then mod:echo("[Havoc Auspex][dbg] " .. msg) end end
 
-local function add_result(id, name, order)
-    if not active or active.id ~= id or active.finalized then return end
-    if active.order_by_name[name] == nil then
-        active.names[#active.names + 1] = name
-    end
-    active.order_by_name[name] = order or false
-    bump_version()
-    dbg(("result from %s (%d collected)"):format(name, #active.names))
-end
+local sim_rows = nil
 
-local function finalize()
-    if not active or active.finalized then return end
-    active.finalized = true
-    bump_version()
-    if not mod:get("debug_mode") then return end
-    mod:echo("[Havoc Auspex] Party havoc orders:")
-    if #active.names == 0 then
-        mod:echo("  (no responses)")
-    else
-        for _, name in ipairs(active.names) do
-            local order = active.order_by_name[name]
-            mod:echo(("  %s: %s"):format(name, order and format_order(order) or "None"))
-        end
-    end
-end
-
-local function local_account_id()
-    local acc
-    pcall(function()
-        local lp = Managers.player and Managers.player:local_player(1)
-        acc = lp and lp:account_id()
-    end)
-    return acc
-end
-
-local function count_expected()
-    local n = 1
-    local total = 1
+local function build_rows()
+    local rows = {}
+    local party_size = 0
     pcall(function()
         local pim = Managers.party_immaterium
         local members = pim and pim:all_members()
         if type(members) ~= "table" then return end
-        local self_acc = local_account_id()
-        for _, m in ipairs(members) do
-            local acc = m.account_id and m:account_id()
-            if acc and acc ~= self_acc then
-                total = total + 1
-                if rtc_api and rtc_api.get_player_by_account_id then
-                    local p = rtc_api.get_player_by_account_id(acc)
-                    if p and rtc_api.player_has_mod(p, Net.PROTOCOL) then
-                        n = n + 1
+        local self_name = Net.self_name()
+        for i = 1, #members do
+            local member = members[i]
+            local presence = type(member.presence) == "function" and member:presence()
+            if presence then
+                party_size = party_size + 1
+                if presence:is_myself() then
+                    rows[#rows + 1] = { name = self_name .. " (you)", order = Presence.my_order() or false }
+                else
+                    local order = Presence.member_order(presence)
+                    if order ~= nil then
+                        local name = member:name()
+                        if name == nil or name == "" then name = presence:account_name() end
+                        if name == nil or name == "" then name = "?" end
+                        rows[#rows + 1] = { name = name, order = order }
                     end
                 end
             end
         end
     end)
-    return n, total
-end
-
-local function start_request(simulate)
-    req_counter = req_counter + 1
-    local id = req_counter
-    active = { id = id, order_by_name = {}, names = {}, elapsed = 0, finalized = false }
-    bump_version()
-
-    Net.build_self_order(function(order)
-        add_result(id, Net.self_name() .. " (you)", order)
-    end)
-
-    if simulate then
-        active.expected = nil
-        local fixtures = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/test_fixtures")
-        for _, f in ipairs(fixtures or {}) do
-            add_result(id, f.name, f.order)
-        end
-        status("[Havoc Auspex] Simulating party replies…")
-    else
-        active.expected, active.party_size = count_expected()
-        if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
-            active.expected = nil
-        end
-        if rtc_api then
-            rtc_api.send(PROTO, Net.EVENTS.REQUEST, "all", { req_id = id, pv = Net.PV })
-        end
-        status("[Havoc Auspex] Requesting party havoc orders…")
+    if #rows == 0 then
+        rows[1] = { name = Net.self_name() .. " (you)", order = Presence.my_order() or false }
+        party_size = math.max(party_size, 1)
     end
+    return rows, party_size
 end
 
-local function on_request(requester_player, data)
-    if not requester_player then return end
-    local req_id = type(data) == "table" and data.req_id or nil
-    dbg("got request, replying")
-    Net.build_self_order(function(order)
-        rtc_api.send(PROTO, Net.EVENTS.REPLY, requester_player, {
-            req_id = req_id, pv = Net.PV, name = Net.self_name(), order = order,
-        })
-    end)
-end
-
-local function on_reply(player, data)
-    if type(data) ~= "table" then return end
-    if not active or data.req_id ~= active.id then return end
-    if data.pv ~= Net.PV then dbg("ignoring reply pv=" .. tostring(data.pv)); return end
-    add_result(active.id, data.name or (player and type(player.name) == "function" and player:name()) or "?", data.order)
-end
-
-mod.update = function(dt)
-    if rtc_api and rtc_api.poll then rtc_api.poll() end
-    if rtc_api and rtc_api.tick then rtc_api.tick(dt) end
-    if not active or active.finalized then return end
-    active.elapsed = active.elapsed + dt
-    if active.expected and #active.names >= active.expected then
-        finalize()
-    elseif active.elapsed >= (tonumber(mod:get("window_seconds")) or 4) then
-        finalize()
-    end
-end
-
-mod.on_all_mods_loaded = function()
-    local make = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_embedded")
-    rtc_api = make(mod)
-    rtc_api.activate()
-    dbg("using embedded rtc transport (party-keyed)")
-    rtc_api.register(PROTO, Net.EVENTS.REQUEST, on_request)
-    rtc_api.register(PROTO, Net.EVENTS.REPLY, on_reply)
-    local dll = rtc_api.rtc_available() and (rtc_api.dll_version() or "legacy") or "MISSING"
-    mod:info(("Havoc Auspex v%s loaded (protocol v%d, RTC dll: %s)"):format(
-        tostring(mod.version), Net.PV, dll))
-end
-
-mod:command("havocauspex", "Ask your party which havoc orders they have.", function()
-    start_request(mod:get("simulate_replies"))
-end)
-
-mod:command("havocauspex_test", "Local smoke test: simulate party havoc replies.", function()
-    start_request(true)
-end)
-
-mod:command("havocauspex_testpeer", "Toggle accepting the headless rtc-test-peer (testing only).", function()
-    local on = not rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN")
-    rawset(_G, "RTC_TEST_ACCEPT_UNKNOWN", on or nil)
-    mod:echo("[Havoc Auspex] RTC test peer acceptance: " .. (on and "ON" or "off"))
-end)
-
-mod:command("havocauspex_sync", "Rebuild your RTC connections to the party (run if some members' orders are missing).", function()
-    if not (rtc_api and rtc_api.resync) then
-        mod:echo("[Havoc Auspex] Transport not ready.")
-        return
-    end
-    rtc_api.resync()
-    mod:echo("[Havoc Auspex] Rebuilding party connections. Reopen the Havoc terminal in a few seconds.")
-end)
-
-function mod.scan_party()
-    start_request(mod:get("simulate_replies"))
-end
-
-local EMPTY_RESULTS = { scanning = false, finalized = false, rows = {} }
 local results_cache, results_cache_ver = nil, -1
 function mod.current_results()
-    if not active then return EMPTY_RESULTS end
     if results_cache and results_cache_ver == results_version then return results_cache end
-    local rows = {}
-    for _, name in ipairs(active.names) do
-        rows[#rows + 1] = { name = name, order = active.order_by_name[name] }
+    local rows, party_size
+    if sim_rows then
+        rows = sim_rows
+    else
+        rows, party_size = build_rows()
     end
-    results_cache = { scanning = not active.finalized, finalized = active.finalized, rows = rows, party_size = active.party_size }
+    results_cache = { scanning = false, finalized = true, rows = rows, party_size = party_size }
     results_cache_ver = results_version
     return results_cache
 end
+
+local function load_sim_rows()
+    local fixtures = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/test_fixtures")
+    local rows = { { name = Net.self_name() .. " (you)", order = Presence.my_order() or false } }
+    for _, f in ipairs(fixtures or {}) do
+        rows[#rows + 1] = { name = f.name, order = f.order }
+    end
+    sim_rows = rows
+    Presence.refresh_own_order()
+    bump_version()
+    status("[Havoc Auspex] Simulating party replies…")
+end
+
+function mod.scan_party()
+    if mod:get("simulate_replies") then
+        load_sim_rows()
+    else
+        sim_rows = nil
+        Presence.refresh_own_order()
+        bump_version()
+    end
+end
+
+local function on_own_order_changed()
+    if sim_rows then
+        sim_rows[1].order = Presence.my_order() or false
+    end
+    bump_version()
+end
+
+local MANAGER_EVENTS = {
+    event_new_immaterium_entry = "ha_event_new_immaterium_entry",
+    party_immaterium_other_members_updated = "ha_event_party_members_updated",
+    event_havoc_status_refreshed = "ha_event_havoc_status_refreshed",
+}
+
+mod.ha_event_new_immaterium_entry = function() bump_version() end
+mod.ha_event_party_members_updated = function() bump_version() end
+mod.ha_event_havoc_status_refreshed = function() Presence.refresh_own_order() end
+
+local events_registered = false
+local function register_events()
+    if events_registered or not Managers.event then return end
+    for event_name, method in pairs(MANAGER_EVENTS) do
+        Managers.event:register(mod, event_name, method)
+    end
+    events_registered = true
+end
+
+local function unregister_events()
+    if not events_registered then return end
+    if Managers.event then
+        for event_name in pairs(MANAGER_EVENTS) do
+            Managers.event:unregister(mod, event_name)
+        end
+    end
+    events_registered = false
+end
+
+mod.on_all_mods_loaded = function()
+    Presence.activate(on_own_order_changed)
+    register_events()
+    mod:info(("Havoc Auspex v%s loaded (immaterium presence transport, payload v%d)"):format(
+        tostring(mod.version), Presence.PAYLOAD_VERSION))
+end
+
+mod.on_enabled = function()
+    register_events()
+    Presence.refresh_own_order()
+end
+
+mod.on_disabled = function()
+    unregister_events()
+    Presence.clear_published_order()
+end
+
+mod.on_unloaded = function()
+    unregister_events()
+end
+
+mod.on_game_state_changed = function(status_name, state_name)
+    if status_name == "enter" and state_name == "StateGameplay" then
+        Presence.refresh_own_order()
+    end
+end
+
+local function echo_report()
+    local res = mod.current_results()
+    mod:echo("[Havoc Auspex] Party havoc orders:")
+    local rows = res.rows
+    if #rows == 0 then
+        mod:echo("  (no data)")
+    else
+        for _, row in ipairs(rows) do
+            mod:echo(("  %s: %s"):format(row.name, row.order and format_order(row.order) or "None"))
+        end
+    end
+end
+
+mod:command("havocauspex", "Ask your party which havoc orders they have.", function()
+    mod.scan_party()
+    if mod:get("debug_mode") then echo_report() end
+end)
+
+mod:command("havocauspex_test", "Local smoke test: simulate party havoc replies.", function()
+    load_sim_rows()
+end)
 
 mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_auspex_ui") 

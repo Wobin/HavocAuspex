@@ -4,9 +4,8 @@ A shipboard cogitator-link for your strike team: each member runs Havoc Auspex (
 
 ## Installation
 
-This package bundles the peer-networking plugin (`darktide_plugin_rtc.dll`). Installing through Vortex deploys both halves automatically:
+Pure Lua, no native plugin or binary required. Installing through Vortex deploys the mod automatically (`mods/Havoc Auspex/`, added to `mod_load_order.txt` by Vortex).
 
-- `mods/Havoc Auspex/` - the mod itself (added to `mod_load_order.txt` by Vortex).
-- `binaries/plugins/darktide_plugin_rtc.dll` - the native transport, auto-loaded by the engine on launch.
+For a manual install, copy the `mods/Havoc Auspex` folder into your Darktide `mods/` directory and add `Havoc Auspex` to `mod_load_order.txt`.
 
-For a manual install, copy the `mods/Havoc Auspex` folder into your Darktide `mods/` directory and copy `darktide_plugin_rtc.dll` into `binaries/plugins/`. Some antivirus software may flag the unsigned plugin; allow it if so.
+Orders are shared through the game's own presence service, so party members' orders appear automatically — even while they are loading, in a mission, or in a different hub instance. If you are upgrading from a version before 1.9.0, the old `darktide_rtc_ffi.dll` / `darktide_plugin_rtc.dll` binaries are no longer used and can be deleted.

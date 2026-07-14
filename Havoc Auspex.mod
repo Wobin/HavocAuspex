@@ -8,8 +8,5 @@ return {
 			mod_localization = "Havoc Auspex/scripts/mods/Havoc Auspex/Havoc Auspex_localization",
 		})
 	end,
-	load_after = {
-		"rtc",
-	},
 	packages = {},
 }

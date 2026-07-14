@@ -13,13 +13,6 @@ return {
                 tooltip       = "hide_fading_light_tooltip",
             },
             {
-                setting_id    = "window_seconds",
-                type          = "numeric",
-                default_value = 4,
-                range         = { 2, 15 },
-                tooltip       = "window_seconds_tooltip",
-            },
-            {
                 setting_id    = "simulate_replies",
                 type          = "checkbox",
                 default_value = false,
