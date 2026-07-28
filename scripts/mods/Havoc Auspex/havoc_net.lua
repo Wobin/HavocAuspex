@@ -1,11 +1,4 @@
-local Net = {
-    PROTOCOL = "Havoc Auspex",
-    PV = 1,
-    EVENTS = {
-        REQUEST = "havoc_request",
-        REPLY   = "havoc_reply",
-    },
-}
+local Net = {}
 
 function Net.build_self_order(on_done)
     local svc

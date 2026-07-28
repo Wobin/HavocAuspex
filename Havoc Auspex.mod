@@ -9,7 +9,10 @@ return {
 		})
 	end,
 	load_after = {
-		"rtc",
+		"Vox Manifold",
+	},
+	require = {
+		"Vox Manifold",
 	},
 	packages = {},
 }

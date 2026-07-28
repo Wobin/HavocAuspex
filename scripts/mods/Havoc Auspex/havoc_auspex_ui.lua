@@ -16,6 +16,7 @@ local ICON, ICON_GAP   = 30, 34
 local ICON_X           = 433
 local MAX_ROWS, MAX_ICONS = 4, 6
 local TIP_W, TIP_H     = 220, 26
+local THUMB_W, THUMB_H = 224, 126
 local DEFAULT_ICON = "content/ui/materials/icons/circumstances/special_waves_01"
 local REFRESH_ICON = "content/ui/materials/hud/interactions/icons/pocketable_syringe_ability"
 
@@ -106,6 +107,38 @@ local tip_passes = {
       visibility_function = function(content) return content.tip_visible == true end },
 }
 
+local THUMB_MATERIAL = "content/ui/materials/mission_board/texture_with_grid_effect"
+local CARD_TITLE_H, CARD_SUB_H = 24, 18
+local CARD_W = THUMB_W + 4
+local CARD_H = 2 + THUMB_H + CARD_TITLE_H + CARD_SUB_H + 2
+
+local function card_visible(content) return content.thumb_visible == true end
+
+local thumb_passes = {
+    { pass_type = "rect", style_id = "card_bg",
+      style = { color = { 252, 8, 9, 12 }, size = { CARD_W, CARD_H }, offset = { 0, 0, 2 } },
+      visibility_function = card_visible },
+    { pass_type = "texture", style_id = "thumb_tex", value = THUMB_MATERIAL,
+      style = { size = { THUMB_W, THUMB_H }, offset = { 2, 2, 3 }, color = { 255, 255, 255, 255 },
+                material_values = { texture_map = "content/ui/textures/missions/quickplay_medium", show_static = 0 } },
+      visibility_function = card_visible },
+    { pass_type = "text", value_id = "card_title", value = "", style_id = "card_title",
+      style = { font_type = "proxima_nova_bold", font_size = 18, drop_shadow = true,
+                text_color = { 255, 245, 245, 245 }, size = { THUMB_W, CARD_TITLE_H },
+                offset = { 2, THUMB_H + 4, 4 },
+                text_horizontal_alignment = "center", text_vertical_alignment = "center" },
+      visibility_function = card_visible },
+    { pass_type = "text", value_id = "card_sub", value = "", style_id = "card_sub",
+      style = { font_type = "proxima_nova_medium", font_size = 15,
+                text_color = { 255, 180, 180, 180 }, size = { THUMB_W, CARD_SUB_H },
+                offset = { 2, THUMB_H + 4 + CARD_TITLE_H, 4 },
+                text_horizontal_alignment = "center", text_vertical_alignment = "center" },
+      visibility_function = card_visible },
+    { pass_type = "texture", value = "content/ui/materials/frames/frame_tile_2px", style_id = "card_frame",
+      style = { color = { 255, 110, 140, 170 }, size = { CARD_W, CARD_H }, offset = { 0, 0, 5 } },
+      visibility_function = card_visible },
+}
+
 local refresh_passes = {
     { pass_type = "hotspot", content_id = "hotspot" },
     { pass_type = "rect",
@@ -146,6 +179,10 @@ local function apply_definitions(defs)
     sg.ha_tip = { horizontal_alignment = "left", vertical_alignment = "top",
         parent = "ha_panel", size = { PANEL_W, PANEL_H }, position = { 0, 0, 260 } }
     wd.ha_tip = UIWidget.create_definition(tip_passes, "ha_tip")
+
+    sg.ha_thumb = { horizontal_alignment = "left", vertical_alignment = "top",
+        parent = "ha_panel", size = { PANEL_W, PANEL_H }, position = { 0, 0, 270 } }
+    wd.ha_thumb = UIWidget.create_definition(thumb_passes, "ha_thumb")
 end
 
 mod:hook_require("scripts/ui/views/havoc_play_view/havoc_play_view_definitions", function(defs)
@@ -170,6 +207,7 @@ mod:hook_require("scripts/ui/views/havoc_play_view/havoc_play_view", function(in
             self._ha_rows    = {}
             for i = 1, MAX_ROWS do self._ha_rows[i] = mk("ha_row_" .. i) end
             self._ha_tip     = mk("ha_tip")
+            self._ha_thumb   = mk("ha_thumb")
         end)
         if not ok then return false end
         self._ha_widgets = true
@@ -196,7 +234,7 @@ local function rebuild_rows(self, rows)
                         d.charges and (" (" .. tostring(d.charges) .. "c)") or "")
                     c.col_loc = d.location or ""
                     if st.loc_hs then
-                        st.loc_hs.size[1] = (d.location_sub ~= nil and d.location and d.location ~= "") and COL_LOC_W or 0
+                        st.loc_hs.size[1] = (d.location and d.location ~= "") and COL_LOC_W or 0
                     end
                     for k = 1, MAX_ICONS do
                         local circ = d.circs[k]
@@ -232,6 +270,7 @@ local function render_rows(self)
     end
 
     local hover_name, tip_cx, tip_y
+    local thumb_tex, thumb_row, thumb_title, thumb_sub
     local desc = self._ha_desc
     if desc then
         for i = 1, MAX_ROWS do
@@ -251,11 +290,11 @@ local function render_rows(self)
                     end
                 end
                 local lhs = c.loc_hs
-                if lhs and lhs.is_hover and d.location_sub and d.location_sub ~= "" then
-                    local ls = rw.style.loc_hs
-                    hover_name = d.location_sub
-                    tip_cx = ls.offset[1] + ls.size[1] / 2
-                    tip_y = ROW_TOP + (i - 1) * ROW_H + ROW_H - 4
+                if lhs and lhs.is_hover and type(d.texture) == "string" then
+                    thumb_tex = d.texture
+                    thumb_row = i
+                    thumb_title = d.location
+                    thumb_sub = d.location_sub
                 end
             end
         end
@@ -263,11 +302,8 @@ local function render_rows(self)
 
     if self._ha_panel then
         local overflow = #rows - MAX_ROWS
-        local missing = res.finalized and type(res.party_size) == "number" and #rows < res.party_size
         self._ha_panel.content.status = (not hover_name)
-            and (res.scanning and "Scanning party…"
-                 or (overflow > 0 and ("+ " .. overflow .. " more not shown"))
-                 or (missing and "Missing a teammate? If they run the mod, try /havocauspex_sync")
+            and ((overflow > 0 and ("+ " .. overflow .. " more not shown"))
                  or ((#rows == 0) and "No responses.")
                  or "")
             or ""
@@ -301,6 +337,27 @@ local function render_rows(self)
             ts.tip.offset[1], ts.tip.offset[2]             = tip_x, tip_yy
         else
             tip.content.tip_visible = false
+        end
+    end
+
+    local thumb = self._ha_thumb
+    if thumb then
+        if thumb_tex then
+            local ts = thumb.style
+            ts.thumb_tex.material_values.texture_map = thumb_tex
+            thumb.content.card_title = thumb_title or ""
+            thumb.content.card_sub = thumb_sub or ""
+            thumb.content.thumb_visible = true
+            local row_y = ROW_TOP + (thumb_row - 1) * ROW_H
+            local ty = math.max(2, math.min(row_y + ROW_H / 2 - CARD_H / 2, PANEL_H - CARD_H - 2))
+            local tx = PANEL_W + 8
+            ts.card_bg.offset[1],    ts.card_bg.offset[2]    = tx,     ty
+            ts.thumb_tex.offset[1],  ts.thumb_tex.offset[2]  = tx + 2, ty + 2
+            ts.card_title.offset[1], ts.card_title.offset[2] = tx + 2, ty + 2 + THUMB_H + 2
+            ts.card_sub.offset[1],   ts.card_sub.offset[2]   = tx + 2, ty + 2 + THUMB_H + 2 + CARD_TITLE_H
+            ts.card_frame.offset[1], ts.card_frame.offset[2] = tx,     ty
+        else
+            thumb.content.thumb_visible = false
         end
     end
 end

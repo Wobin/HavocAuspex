@@ -1,12 +1,12 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-07-10
-    Version: 1.8.2
+    Date: 2026-07-28
+    Version: 2.0.0
 --]]
 
 local mod = get_mod("Havoc Auspex")
-mod.version = "1.8.2"
+mod.version = "2.0.0"
 
 local Net = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_net")
 
@@ -49,6 +49,17 @@ local function map_subtitle(map_id)
     local zone = t.zone_id and _zones and _zones[t.zone_id] and try_localize(_zones[t.zone_id].name)
     if zone then return zone end
     return t.coordinates and try_localize(t.coordinates) or nil
+end
+
+local function map_texture(map_id)
+    if type(map_id) ~= "string" then return nil end
+    load_templates()
+    local t = _mission_templates and _mission_templates[map_id]
+    if not t then return nil end
+    return (type(t.texture_big) == "string" and t.texture_big)
+        or (type(t.texture_medium) == "string" and t.texture_medium)
+        or (type(t.texture_small) == "string" and t.texture_small)
+        or nil
 end
 
 local CIRC_COLOR_NAMES = {
@@ -155,191 +166,170 @@ function mod.describe_order(order)
         charges      = order.charges,
         location     = map_name(order.map),
         location_sub = map_subtitle(order.map),
+        texture      = map_texture(order.map),
         circs        = circs,
     }
 end
 
-local rtc_api
-local PROTO = mod
-local req_counter = 0
-local active = nil
+local MANIFOLD_ID = "wobin.havoc"
+local PAYLOAD_VERSION = 1
 
 local results_version = 0
-local function bump_version() results_version = results_version + 1 end
+local function bump_results() results_version = results_version + 1 end
 function mod.results_version() return results_version end
+mod.bump_results = bump_results
 
-local function status(msg) if mod:get("debug_mode") then mod:echo(msg) end end
-local function dbg(msg) if mod:get("debug_mode") then mod:echo("[Havoc Auspex][dbg] " .. msg) end end
-
-local function add_result(id, name, order)
-    if not active or active.id ~= id or active.finalized then return end
-    if active.order_by_name[name] == nil then
-        active.names[#active.names + 1] = name
-    end
-    active.order_by_name[name] = order or false
-    bump_version()
-    dbg(("result from %s (%d collected)"):format(name, #active.names))
+local function debug_on()
+    return mod:get("debug_mode") == true
 end
 
-local function finalize()
-    if not active or active.finalized then return end
-    active.finalized = true
-    bump_version()
-    if not mod:get("debug_mode") then return end
-    mod:echo("[Havoc Auspex] Party havoc orders:")
-    if #active.names == 0 then
-        mod:echo("  (no responses)")
-    else
-        for _, name in ipairs(active.names) do
-            local order = active.order_by_name[name]
-            mod:echo(("  %s: %s"):format(name, order and format_order(order) or "None"))
+local function dbg(fmt, ...)
+    if not debug_on() then return end
+    mod:info("[Havoc Auspex][dbg] " .. (select("#", ...) > 0 and (fmt):format(...) or fmt))
+end
+
+local function member_name(member)
+    local name = "?"
+    pcall(function() name = (member and member.name and member:name()) or "?" end)
+    return name
+end
+
+local function build_payload()
+    local order = mod.my_order
+    if type(order) ~= "table" then return nil end
+    local circs = {}
+    if type(order.flags) == "table" then
+        for k, v in pairs(order.flags) do
+            local s = (type(k) == "string" and k) or (type(v) == "string" and v) or nil
+            local cid = s and s:match("^havoc%-circ%-(.+)$")
+            if cid then circs[#circs + 1] = cid end
+        end
+        table.sort(circs)
+    end
+    return { pv = PAYLOAD_VERSION, r = order.rank, c = order.charges, m = order.map, f = circs }
+end
+
+local function decode_payload(payload)
+    if type(payload) ~= "table" then return nil end
+    local flags = {}
+    if type(payload.f) == "table" then
+        for i = 1, #payload.f do
+            local cid = payload.f[i]
+            if type(cid) == "string" then flags["havoc-circ-" .. cid] = true end
         end
     end
+    return {
+        rank    = tonumber(payload.r),
+        charges = tonumber(payload.c),
+        map     = type(payload.m) == "string" and payload.m or nil,
+        flags   = flags,
+    }
 end
 
-local function local_account_id()
-    local acc
-    pcall(function()
-        local lp = Managers.player and Managers.player:local_player(1)
-        acc = lp and lp:account_id()
-    end)
-    return acc
-end
-
-local function count_expected()
-    local n = 1
-    local total = 1
-    pcall(function()
-        local pim = Managers.party_immaterium
-        local members = pim and pim:all_members()
-        if type(members) ~= "table" then return end
-        local self_acc = local_account_id()
-        for _, m in ipairs(members) do
-            local acc = m.account_id and m:account_id()
-            if acc and acc ~= self_acc then
-                total = total + 1
-                if rtc_api and rtc_api.get_player_by_account_id then
-                    local p = rtc_api.get_player_by_account_id(acc)
-                    if p and rtc_api.player_has_mod(p, Net.PROTOCOL) then
-                        n = n + 1
-                    end
-                end
-            end
-        end
-    end)
-    return n, total
-end
-
-local function start_request(simulate)
-    req_counter = req_counter + 1
-    local id = req_counter
-    active = { id = id, order_by_name = {}, names = {}, elapsed = 0, finalized = false }
-    bump_version()
-
+function mod.refresh_own_order()
     Net.build_self_order(function(order)
-        add_result(id, Net.self_name() .. " (you)", order)
-    end)
-
-    if simulate then
-        active.expected = nil
-        local fixtures = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/test_fixtures")
-        for _, f in ipairs(fixtures or {}) do
-            add_result(id, f.name, f.order)
-        end
-        status("[Havoc Auspex] Simulating party replies…")
-    else
-        active.expected, active.party_size = count_expected()
-        if rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN") then
-            active.expected = nil
-        end
-        if rtc_api then
-            rtc_api.send(PROTO, Net.EVENTS.REQUEST, "all", { req_id = id, pv = Net.PV })
-        end
-        status("[Havoc Auspex] Requesting party havoc orders…")
-    end
-end
-
-local function on_request(requester_player, data)
-    if not requester_player then return end
-    local req_id = type(data) == "table" and data.req_id or nil
-    dbg("got request, replying")
-    Net.build_self_order(function(order)
-        rtc_api.send(PROTO, Net.EVENTS.REPLY, requester_player, {
-            req_id = req_id, pv = Net.PV, name = Net.self_name(), order = order,
-        })
+        mod.my_order = (type(order) == "table") and order or nil
+        if mod.manifold then mod.manifold.mark_dirty(MANIFOLD_ID) end
+        bump_results()
+        dbg("own order refreshed: %s", mod.my_order and format_order(mod.my_order) or "None (no havoc order)")
     end)
 end
 
-local function on_reply(player, data)
-    if type(data) ~= "table" then return end
-    if not active or data.req_id ~= active.id then return end
-    if data.pv ~= Net.PV then dbg("ignoring reply pv=" .. tostring(data.pv)); return end
-    add_result(active.id, data.name or (player and type(player.name) == "function" and player:name()) or "?", data.order)
+mod.ha_event_havoc_status_refreshed = function()
+    mod.refresh_own_order()
 end
-
-mod.update = function(dt)
-    if rtc_api and rtc_api.poll then rtc_api.poll() end
-    if rtc_api and rtc_api.tick then rtc_api.tick(dt) end
-    if not active or active.finalized then return end
-    active.elapsed = active.elapsed + dt
-    if active.expected and #active.names >= active.expected then
-        finalize()
-    elseif active.elapsed >= (tonumber(mod:get("window_seconds")) or 4) then
-        finalize()
-    end
-end
-
-mod.on_all_mods_loaded = function()
-    local make = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/rtc_embedded")
-    rtc_api = make(mod)
-    rtc_api.activate()
-    dbg("using embedded rtc transport (party-keyed)")
-    rtc_api.register(PROTO, Net.EVENTS.REQUEST, on_request)
-    rtc_api.register(PROTO, Net.EVENTS.REPLY, on_reply)
-    local dll = rtc_api.rtc_available() and (rtc_api.dll_version() or "legacy") or "MISSING"
-    mod:info(("Havoc Auspex v%s loaded (protocol v%d, RTC dll: %s)"):format(
-        tostring(mod.version), Net.PV, dll))
-end
-
-mod:command("havocauspex", "Ask your party which havoc orders they have.", function()
-    start_request(mod:get("simulate_replies"))
-end)
-
-mod:command("havocauspex_test", "Local smoke test: simulate party havoc replies.", function()
-    start_request(true)
-end)
-
-mod:command("havocauspex_testpeer", "Toggle accepting the headless rtc-test-peer (testing only).", function()
-    local on = not rawget(_G, "RTC_TEST_ACCEPT_UNKNOWN")
-    rawset(_G, "RTC_TEST_ACCEPT_UNKNOWN", on or nil)
-    mod:echo("[Havoc Auspex] RTC test peer acceptance: " .. (on and "ON" or "off"))
-end)
-
-mod:command("havocauspex_sync", "Rebuild your RTC connections to the party (run if some members' orders are missing).", function()
-    if not (rtc_api and rtc_api.resync) then
-        mod:echo("[Havoc Auspex] Transport not ready.")
-        return
-    end
-    rtc_api.resync()
-    mod:echo("[Havoc Auspex] Rebuilding party connections. Reopen the Havoc terminal in a few seconds.")
-end)
 
 function mod.scan_party()
-    start_request(mod:get("simulate_replies"))
+    bump_results()
+    mod.refresh_own_order()
 end
 
-local EMPTY_RESULTS = { scanning = false, finalized = false, rows = {} }
+function mod.build_rows()
+    local Manifold = mod.manifold
+    if not Manifold then
+        dbg("build_rows: Vox Manifold not available")
+        return {}
+    end
+    local rows = {}
+    local members = Manifold.members()
+    for i = 1, #members do
+        local member = members[i]
+        if Manifold.is_myself(member) then
+            rows[#rows + 1] = { name = Net.self_name() .. " (you)", order = mod.my_order or false }
+        elseif Manifold.has_mod(member, MANIFOLD_ID) then
+            local payload = Manifold.get(member, MANIFOLD_ID)
+            local order = (type(payload) == "table") and decode_payload(payload) or false
+            rows[#rows + 1] = { name = member_name(member), order = order }
+            dbg("member %s: has mod v%s, order %s", member_name(member),
+                tostring(Manifold.has_mod(member, MANIFOLD_ID)), order and format_order(order) or "not yet published")
+        else
+            dbg("member %s: NOT running Havoc Auspex (absent from capability record)", member_name(member))
+        end
+    end
+    dbg("built %d rows from %d party members", #rows, #members)
+    return rows
+end
+
+local EMPTY_RESULTS = { rows = {} }
 local results_cache, results_cache_ver = nil, -1
 function mod.current_results()
-    if not active then return EMPTY_RESULTS end
+    if not mod.manifold then return EMPTY_RESULTS end
     if results_cache and results_cache_ver == results_version then return results_cache end
-    local rows = {}
-    for _, name in ipairs(active.names) do
-        rows[#rows + 1] = { name = name, order = active.order_by_name[name] }
-    end
-    results_cache = { scanning = not active.finalized, finalized = active.finalized, rows = rows, party_size = active.party_size }
+    results_cache = { rows = mod.build_rows() }
     results_cache_ver = results_version
     return results_cache
 end
+
+mod.on_all_mods_loaded = function()
+    local vox = get_mod("Vox Manifold")
+    local Manifold = vox and vox.api
+    if not Manifold then
+        mod:error("[Havoc Auspex] requires Vox Manifold. Install it to share party havoc orders.")
+        return
+    end
+    mod.manifold = Manifold
+
+    Manifold.register(MANIFOLD_ID, mod, build_payload)
+    mod.manifold_unsub = Manifold.on_update(function() bump_results() end)
+
+    Managers.event:register(mod, "event_havoc_status_refreshed", "ha_event_havoc_status_refreshed")
+    mod.refresh_own_order()
+
+    mod:info(("Havoc Auspex v%s loaded (Vox Manifold transport, payload v%d)"):format(
+        tostring(mod.version), PAYLOAD_VERSION))
+    dbg("registered %s with Vox Manifold; debug logging ON", MANIFOLD_ID)
+end
+
+mod:command("havocauspex", "Echo the party's havoc orders to chat.", function()
+    local rows = mod.build_rows()
+    mod:echo("[Havoc Auspex] Party havoc orders:")
+    if #rows == 0 then
+        mod:echo("  (none)")
+        return
+    end
+    for i = 1, #rows do
+        local r = rows[i]
+        mod:echo(("  %s: %s"):format(r.name, r.order and format_order(r.order) or "None"))
+    end
+end)
+
+mod.on_enabled = function()
+    if not mod.manifold then return end
+    mod.manifold.register(MANIFOLD_ID, mod, build_payload)
+    if not mod.manifold_unsub then
+        mod.manifold_unsub = mod.manifold.on_update(function() bump_results() end)
+    end
+    mod.refresh_own_order()
+end
+
+mod.on_disabled = function()
+    if mod.manifold then mod.manifold.unregister(MANIFOLD_ID) end
+    if mod.manifold_unsub then
+        mod.manifold_unsub()
+        mod.manifold_unsub = nil
+    end
+end
+
+mod.on_unload = mod.on_disabled
 
 mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_auspex_ui") 
