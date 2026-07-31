@@ -1,14 +1,15 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-07-28
-    Version: 2.0.0
+    Date: 2026-07-31
+    Version: 2.1.0
 --]]
 
 local mod = get_mod("Havoc Auspex")
-mod.version = "2.0.0"
+mod.version = "2.1.0"
 
 local Net = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_net")
+local id_codec = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/id_codec")
 
 local _mission_templates, _circ_templates, _zones
 local function load_templates()
@@ -172,7 +173,7 @@ function mod.describe_order(order)
 end
 
 local MANIFOLD_ID = "wobin.havoc"
-local PAYLOAD_VERSION = 1
+local PAYLOAD_VERSION = 2
 
 local results_version = 0
 local function bump_results() results_version = results_version + 1 end
@@ -194,34 +195,72 @@ local function member_name(member)
     return name
 end
 
+local function build_codec(templates, label)
+    local ids = {}
+    if type(templates) == "table" then
+        for name in pairs(templates) do
+            if type(name) == "string" then ids[#ids + 1] = name end
+        end
+    end
+    local c = id_codec.build(ids)
+    if #c.collisions > 0 then
+        mod:warning(("[Havoc Auspex] %d %s ids still collide at %d-char codes and will ride raw: %s"):format(
+            #c.collisions, label, c.width, table.concat(c.collisions, ", ")))
+    end
+    dbg("%s codec: %d ids, %d-char codes", label, #ids, c.width)
+    return c
+end
+
+local _circ_codec, _mission_codec
+local function get_circ_codec()
+    if not _circ_codec then load_templates(); _circ_codec = build_codec(_circ_templates, "circumstance") end
+    return _circ_codec
+end
+local function get_mission_codec()
+    if not _mission_codec then load_templates(); _mission_codec = build_codec(_mission_templates, "mission") end
+    return _mission_codec
+end
+
 local function build_payload()
     local order = mod.my_order
     if type(order) ~= "table" then return nil end
+    local cc = get_circ_codec()
     local circs = {}
     if type(order.flags) == "table" then
         for k, v in pairs(order.flags) do
             local s = (type(k) == "string" and k) or (type(v) == "string" and v) or nil
             local cid = s and s:match("^havoc%-circ%-(.+)$")
-            if cid then circs[#circs + 1] = cid end
+            if cid then circs[#circs + 1] = cc.encode(cid) end
         end
         table.sort(circs)
     end
-    return { pv = PAYLOAD_VERSION, r = order.rank, c = order.charges, m = order.map, f = circs }
+    local map = order.map
+    if type(map) == "string" then map = get_mission_codec().encode(map) end
+    return { pv = PAYLOAD_VERSION, r = order.rank, c = order.charges, m = map, f = circs }
 end
 
 local function decode_payload(payload)
     if type(payload) ~= "table" then return nil end
+    local pv = tonumber(payload.pv) or 1
+    local cc = pv >= 2 and get_circ_codec() or nil
     local flags = {}
     if type(payload.f) == "table" then
         for i = 1, #payload.f do
-            local cid = payload.f[i]
-            if type(cid) == "string" then flags["havoc-circ-" .. cid] = true end
+            local token = payload.f[i]
+            if type(token) == "string" then
+                local cid = cc and (cc.decode(token) or token) or token
+                flags["havoc-circ-" .. cid] = true
+            end
         end
+    end
+    local map = type(payload.m) == "string" and payload.m or nil
+    if map and pv >= 2 then
+        map = get_mission_codec().decode(map) or map
     end
     return {
         rank    = tonumber(payload.r),
         charges = tonumber(payload.c),
-        map     = type(payload.m) == "string" and payload.m or nil,
+        map     = map,
         flags   = flags,
     }
 end
@@ -282,11 +321,16 @@ end
 
 mod.on_all_mods_loaded = function()
     local vox = get_mod("Vox Manifold")
-    local Manifold = vox and vox.api
-    if not Manifold then
-        mod:error("[Havoc Auspex] requires Vox Manifold. Install it to share party havoc orders.")
+
+    local major = vox and tonumber(tostring(vox.version):match("^(%d+)"))
+    local supported = vox and vox.api and major and major >= 2
+
+    if not supported then
+        mod:error("[Havoc Auspex] requires Vox Manifold 2.0.0 or later. Install it to share party havoc orders.")
         return
     end
+
+    local Manifold = vox.api
     mod.manifold = Manifold
 
     Manifold.register(MANIFOLD_ID, mod, build_payload)
