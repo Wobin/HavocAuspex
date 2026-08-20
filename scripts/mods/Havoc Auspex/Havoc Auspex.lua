@@ -1,12 +1,11 @@
 --[[
     Name: Havoc Auspex
     Author: Wobin
-    Date: 2026-07-31
-    Version: 2.1.0
+    Date: 2026-08-20
 --]]
 
 local mod = get_mod("Havoc Auspex")
-mod.version = "2.1.0"
+mod.version = mod.get_metadata and mod:get_metadata("version") or "unknown"
 
 local Net = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/havoc_net")
 local id_codec = mod:io_dofile("Havoc Auspex/scripts/mods/Havoc Auspex/id_codec")
@@ -334,7 +333,7 @@ mod.on_all_mods_loaded = function()
     mod.manifold = Manifold
 
     Manifold.register(MANIFOLD_ID, mod, build_payload)
-    mod.manifold_unsub = Manifold.on_update(function() bump_results() end)
+    mod.manifold_unsub = Manifold.on_update(MANIFOLD_ID, function() bump_results() end)
 
     Managers.event:register(mod, "event_havoc_status_refreshed", "ha_event_havoc_status_refreshed")
     mod.refresh_own_order()
@@ -361,7 +360,7 @@ mod.on_enabled = function()
     if not mod.manifold then return end
     mod.manifold.register(MANIFOLD_ID, mod, build_payload)
     if not mod.manifold_unsub then
-        mod.manifold_unsub = mod.manifold.on_update(function() bump_results() end)
+        mod.manifold_unsub = mod.manifold.on_update(MANIFOLD_ID, function() bump_results() end)
     end
     mod.refresh_own_order()
 end

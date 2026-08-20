@@ -1,0 +1,21 @@
+{
+	"name": "Havoc Auspex",
+	"description": "A shipboard cogitator-link for your strike team: each member runs Havoc Auspex and it collates everyone's current Havoc order; rank, charges remaining, location, and circumstances into a single readout before you launch. Requires Vox Manifold.",
+	"version": "2.1.1",
+	"author": "Wobin",
+	"homepage": "https://www.nexusmods.com/warhammer40kdarktide/mods/926",
+	"source": "https://github.com/Wobin/HavocAuspex",
+	"funding": {
+		"kofi": "https://ko-fi.com/wobin_dwonderdog"
+	},
+	"nexusId": "926",
+	"order": {
+		"require": [
+			"Vox Manifold"
+		],
+		"this_after": [
+			"Vox Manifold"
+		],
+		"this_before": []
+	}
+}
